@@ -1,0 +1,6 @@
+.env
+certs/
+*.key
+*.crt
+*.pem
+*.log

@@ -1,0 +1,31 @@
+services:
+  derper:
+    image: ghcr.io/pengpercy/tailscale-derper:1.104.2
+    restart: unless-stopped
+    cpus: 1.0
+    mem_limit: 512m
+    memswap_limit: 1g
+    command:
+      - --hostname=${DERP_HOST:?Set DERP_HOST in .env}
+      - --certmode=manual
+      - --certdir=/certs
+      - --a=:8090
+      - --http-port=-1
+      - --stun=true
+      - --stun-port=3478
+      - --verify-clients=true
+      - --c=/var/lib/derper/derper.key
+    ports:
+      - "8090:8090/tcp"
+      - "3478:3478/udp"
+    volumes:
+      - ./certs:/certs
+      - /run/tailscale:/var/run/tailscale:ro
+      - derper-data:/var/lib/derper
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  derper-data:

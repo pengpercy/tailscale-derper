@@ -1,0 +1,85 @@
+name: Publish image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            [[ "$GITHUB_REF_NAME" == "v$version" ]]
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build local test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: derper-smoke:local
+          build-args: VERSION=${{ steps.version.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Test version and IP TLS startup
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(docker run --rm derper-smoke:local --version)" == "$VERSION" ]]
+          trap 'docker logs derper-smoke; docker rm -f derper-smoke' EXIT
+          docker run -d --name derper-smoke --cpus=1 --memory=512m --memory-swap=1g \
+            -p 127.0.0.1:18090:8090 --tmpfs /certs --tmpfs /state \
+            derper-smoke:local --hostname=192.0.2.10 --certmode=manual \
+            --certdir=/certs --a=:8090 --http-port=-1 --stun=false \
+            --verify-clients=false --c=/state/derper.key
+          for attempt in $(seq 1 20); do
+            if curl -kfSs https://127.0.0.1:18090/ >/dev/null; then
+              docker logs derper-smoke 2>&1 | grep -q 'sha256-raw:'
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish amd64 and arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ steps.version.outputs.value }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.value }}
+            ghcr.io/${{ github.repository }}:latest
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
